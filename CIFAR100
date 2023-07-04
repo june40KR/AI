@@ -1,0 +1,312 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+import torch
+import torch.nn as nn
+import torchvision
+import torchvision.transforms as T
+
+import pickle
+if torch.cuda.is_available():
+    device = torch.device('cuda')
+else:
+    device = torch.device('cpu')
+    
+from IPython.display import HTML, display
+
+
+# Custom IPython progress bar for training
+class ProgressMonitor(object):
+    
+    tmpl = """
+        <table style="width: 100%;">
+            <tbody>
+                <tr>
+                    <td style="width: 30%;">
+                     <b>Loss: {loss:0.4f}</b> &nbsp&nbsp&nbsp {value} / {length}
+                    </td>
+                    <td style="width: 70%;">
+                        <progress value='{value}' max='{length}', style='width: 100%'>{value}</progress>
+                    </td>
+                </tr>
+            </tbody>
+        </table>        
+        """
+
+    def __init__(self, length):
+        self.length = length
+        self.count = 0
+        self.display = display(self.html(0, 0), display_id=True)
+        
+    def html(self, count, loss):
+        return HTML(self.tmpl.format(length=self.length, value=count, loss=loss))
+        
+    def update(self, count, loss):
+        self.count += count
+        self.display.update(self.html(self.count, loss))
+        
+transform_train = T.Compose( [T.RandomCrop(32, padding=4), T.RandomHorizontalFlip(), T.ToTensor(), T.Normalize( (0.5, 0.5, 0.5), (0.5, 0.5, 0.5) )] )
+transform_test = T.Compose( [T.ToTensor(), T.Normalize( (0.5, 0.5, 0.5), (0.5, 0.5, 0.5) )] )
+
+train_set = torchvision.datasets.CIFAR100('./data', train=True, download=True, transform=transform_train )
+test_set = torchvision.datasets.CIFAR100('./data', train=False, download=True, transform=transform_test )
+
+classes = train_set.classes
+
+
+class SimpleCNN(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+        
+        self.conv_layers = nn.Sequential(
+            
+#------------1
+            nn.Conv2d( in_channels=3, out_channels=32, kernel_size=3, padding=1 ), 
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+
+            nn.Conv2d( in_channels=32, out_channels=64, kernel_size=3, padding=1 ),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+
+            nn.Conv2d( in_channels=64, out_channels=64, kernel_size=3, padding=1 ),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+
+            #### 이미지 크기 절반으로 -> 16x16
+            nn.MaxPool2d(2),
+            nn.Dropout(0.3),
+#-----------2
+            nn.Conv2d( in_channels=64, out_channels=128, kernel_size=3, padding=1 ),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+
+
+            nn.Conv2d( in_channels=128, out_channels=256, kernel_size=3, padding=1 ),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+
+            nn.Conv2d( in_channels=256, out_channels=256, kernel_size=3, padding=1 ),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+
+            #### 이미지 크기 절반으로 -> 8x8
+            nn.MaxPool2d(2),
+            nn.Dropout(0.3),
+#------------3
+            nn.Conv2d( in_channels=256, out_channels=512, kernel_size=3, padding=1 ),
+            nn.BatchNorm2d(512),
+            nn.ReLU(),
+
+            nn.Conv2d( in_channels=512, out_channels=512, kernel_size=3, padding=1 ),
+            nn.BatchNorm2d(512),
+            nn.ReLU(),
+
+            nn.MaxPool2d(2),
+            nn.Dropout(0.3),
+#------------4
+            nn.Conv2d( in_channels=512, out_channels=1024, kernel_size=3, padding=1 ),
+            nn.BatchNorm2d(1024),
+            nn.ReLU(),
+
+            nn.Conv2d( in_channels=1024, out_channels=1024, kernel_size=3, padding=1 ),
+            nn.BatchNorm2d(1024),
+            nn.ReLU(),
+
+            nn.MaxPool2d(2),
+            nn.Dropout(0.3),
+#------------5
+            nn.Conv2d( in_channels=1024, out_channels=1024, kernel_size=3, padding=1 ),
+            nn.BatchNorm2d(1024),
+            nn.ReLU(),
+
+            nn.Conv2d( in_channels=1024, out_channels=1024, kernel_size=3, padding=1 ),
+            nn.BatchNorm2d(1024),
+            nn.ReLU(),
+
+            nn.MaxPool2d(2),
+            nn.Dropout(0.3)
+#------------
+
+
+        )
+        
+        self.fc_layers = nn.Sequential(
+
+
+
+            nn.Linear( 1024 * 1 * 1 , 512 ),
+            nn.ReLU(),
+            nn.Dropout(0.4),
+
+            nn.Linear(512,100)
+    
+
+
+        )
+        
+        
+    def forward(self, x):
+
+        x = self.conv_layers(x)         
+        
+        x = x.view( x.size(0), -1 )
+
+        x = self.fc_layers(x)
+
+        return x
+    
+    
+batch_size = 64 # 배치 사이즈 (한번에 몇 개의 이미지를 배치로 학습할지)
+learning_rate = 0.02 # 학습률 (학습 진행 속도)
+num_epochs = 200
+
+train_loader = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=True)
+test_loader = torch.utils.data.DataLoader(test_set, batch_size=batch_size, shuffle=False)
+
+model = SimpleCNN()
+
+model.to(device)
+
+criterion = nn.CrossEntropyLoss()
+
+optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
+
+from statistics import mean 
+
+def train(optimizer, model, num_epochs=10, first_epoch=1):
+    
+    criterion = nn.CrossEntropyLoss()
+
+    train_losses = []
+    test_losses = []
+
+    for epoch in range(first_epoch, first_epoch + num_epochs):
+        print('Epoch', epoch)
+
+        # train phase
+        model.train()
+
+        # create a progress bar
+        progress = ProgressMonitor(length=len(train_set))
+        
+        # keep track of predictions
+        correct_train = 0
+
+        batch_losses = []
+
+        for batch, targets in train_loader:
+            
+            # Move the training data to the GPU
+            batch = batch.to(device)
+            targets = targets.to(device)
+
+            # clear previous gradient computation
+            optimizer.zero_grad()
+
+            # forward propagation
+            outputs = model(batch)
+
+            # calculate the loss
+            loss = criterion(outputs, targets)
+
+            # backpropagate to compute gradients
+            loss.backward()
+
+            # update model weights
+            optimizer.step()
+
+            batch_losses.append(loss.item())
+
+            # accumulate correct count
+            _, preds = torch.max(outputs, 1)
+            correct_train += torch.sum(preds == targets.data)
+
+            # update progress bar
+            progress.update(batch.shape[0], mean(batch_losses) )
+            
+        
+        train_losses.append( mean(batch_losses))
+
+
+        # test phase
+        model.eval()
+
+        y_pred = []
+
+        correct_test = 0
+
+        # We don't need gradients for test, so wrap in 
+        # no_grad to save memory
+        with torch.no_grad():
+
+            for batch, targets in test_loader:
+
+                # Move the training batch to the GPU
+                batch = batch.to(device)
+                targets = targets.to(device)
+
+                # forward propagation
+                outputs = model(batch)
+
+                # calculate the loss
+                loss = criterion(outputs, targets)
+
+                # save predictions
+                y_pred.extend( outputs.argmax(dim=1).cpu().numpy() )
+
+                # accumulate correct count
+                _, preds = torch.max(outputs, 1)
+                correct_test += torch.sum(preds == targets.data)
+                
+
+        # Calculate accuracy
+        train_acc = correct_train.item() / train_set.data.shape[0]
+        test_acc = correct_test.item() / test_set.data.shape[0]
+
+        print('Training accuracy: {:.2f}%'.format(float(train_acc) * 100))
+        print('Test accuracy: {:.2f}%\n'.format(float(test_acc) * 100))
+
+    
+    return train_losses, test_losses, y_pred
+
+train_losses, test_losses, y_pred = train(optimizer, model, num_epochs=num_epochs)
+
+
+
+# test phase
+model.eval()
+
+# keep track of predictions
+y_pred = []
+
+# We don't need gradients for test, so wrap in 
+# no_grad to save memory
+with torch.no_grad():
+
+    for batch, targets in test_loader:
+
+        # Move the training batch to the GPU
+        batch = batch.to(device)
+        targets = targets.to(device)
+
+        # forward propagation
+        predictions = model(batch)
+
+        # save predictions
+        y_pred.extend( predictions.argmax(dim=1).cpu().numpy() )
+        
+import csv
+
+def make_pred_csv(model):
+    with open('cifar100_submit.csv', mode='w') as pred_file:
+    
+        pred_writer = csv.writer(pred_file, delimiter=',')
+        pred_writer.writerow(['id', 'Category'])
+
+        for i, label in enumerate(y_pred):
+            pred_writer.writerow([i+1, classes[label]])
+    
+
+make_pred_csv(model)
